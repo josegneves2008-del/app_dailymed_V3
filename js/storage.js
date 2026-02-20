@@ -7,6 +7,8 @@ const STORAGE_KEYS = {
   medications: 'dailymed_medications',
   reminders: 'dailymed_reminders',
   recycling: 'dailymed_recycling_deliveries',
+  recyclingPoints: 'dailymed_recycling_points',
+  recyclingFavorites: 'dailymed_recycling_favorites',
   settings: 'dailymed_settings',
   travelChecklist: 'dailymed_travel_checklist',
   medicationHistory: 'dailymed_medication_history',
@@ -93,9 +95,26 @@ function addRecyclingDelivery(delivery) {
   return delivery;
 }
 
+// Recycling points (map)
+function getRecyclingPoints() {
+  return getJson(STORAGE_KEYS.recyclingPoints, []);
+}
+
+function setRecyclingPoints(arr) {
+  setJson(STORAGE_KEYS.recyclingPoints, arr);
+}
+
+function getRecyclingFavorites() {
+  return getJson(STORAGE_KEYS.recyclingFavorites, []);
+}
+
+function setRecyclingFavorites(arr) {
+  setJson(STORAGE_KEYS.recyclingFavorites, arr);
+}
+
 // Settings (notifications, theme)
 function getSettings() {
-  return getJson(STORAGE_KEYS.settings, { notifications: true, theme: 'light' });
+  return getJson(STORAGE_KEYS.settings, { notifications: true, theme: 'auto' });
 }
 
 function setSettings(settings) {

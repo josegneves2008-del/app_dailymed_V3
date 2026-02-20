@@ -41,11 +41,286 @@ const RECYCLING_VOLUMES = {
 const GREEN_UNITS = { box: 2, blister: 1, bottle: 3 };
 const POINTS_UNIT = { box: 5, blister: 3, bottle: 7 };
 
-const RECYCLING_POINTS = [
-  { name: 'Farmácia Central', address: 'Rua das Flores, 123, Lisboa', distance: '0.5 km' },
-  { name: 'Parafarmácia Saúde', address: 'Av. da Liberdade, 45, Lisboa', distance: '1.2 km' },
-  { name: 'Farmácia do Martim', address: 'Largo do Martim Moniz, 1, Lisboa', distance: '2 km' },
+const RECYCLING_POINTS_SEED = [
+  {
+    id: 'seed-1',
+    name: 'Farmácia Central',
+    address: 'Rua das Flores, 123, Lisboa',
+    distance: '0.5 km',
+    lat: 38.7112,
+    lng: -9.1379,
+    mediaType: 'image',
+    mediaUrl: 'https://images.unsplash.com/photo-1580281657525-7204b8b5c5f1?auto=format&fit=crop&w=800&q=60',
+  },
+  {
+    id: 'seed-2',
+    name: 'Parafarmácia Saúde',
+    address: 'Av. da Liberdade, 45, Lisboa',
+    distance: '1.2 km',
+    lat: 38.7207,
+    lng: -9.1468,
+    mediaType: 'image',
+    mediaUrl: 'https://images.unsplash.com/photo-1527689368864-3a821dbccc34?auto=format&fit=crop&w=800&q=60',
+  },
+  {
+    id: 'seed-3',
+    name: 'Farmácia do Martim',
+    address: 'Largo do Martim Moniz, 1, Lisboa',
+    distance: '2 km',
+    lat: 38.7161,
+    lng: -9.1363,
+    mediaType: 'image',
+    mediaUrl: 'https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&w=800&q=60',
+  },
 ];
+
+let recyclingMap = null;
+let recyclingMarkers = null;
+let recyclingMarkerById = {};
+let recyclingUserMarker = null;
+let recyclingUserLocation = null;
+let recyclingRadiusKm = 5;
+let recyclingNearbyPoints = [];
+let recyclingNearbyCache = null;
+let recyclingHandlersBound = false;
+
+function escapeHtml(str) {
+  return (str || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function getAllRecyclingPoints() {
+  return RECYCLING_POINTS_SEED.concat(recyclingNearbyPoints || [], getRecyclingPoints());
+}
+
+function getFavoriteSet() {
+  return new Set(getRecyclingFavorites());
+}
+
+function isFavoritePoint(id) {
+  return getFavoriteSet().has(id);
+}
+
+function toggleFavoritePoint(id) {
+  const list = getRecyclingFavorites();
+  const idx = list.indexOf(id);
+  if (idx >= 0) list.splice(idx, 1);
+  else list.push(id);
+  setRecyclingFavorites(list);
+  return list.indexOf(id) >= 0;
+}
+
+function buildPopupHtml(point) {
+  const isFav = isFavoritePoint(point.id);
+  const mediaUrl = point.mediaUrl || 'https://images.unsplash.com/photo-1528323273322-d81458248d40?auto=format&fit=crop&w=800&q=60';
+  const mediaBlock = (point.mediaType === 'video')
+    ? '<video src="' + mediaUrl + '" controls></video>'
+    : '<img src="' + mediaUrl + '" alt="Ponto de reciclagem" />';
+  return '<div class="recycling-popup">' +
+    '<h3>' + escapeHtml(point.name) + '</h3>' +
+    '<p class="text-xs text-on-surface-variant mb-2">' + escapeHtml(point.address || '') + '</p>' +
+    mediaBlock +
+    '<button type="button" class="recycling-favorite-btn' + (isFav ? ' is-active' : '') + '" data-point-id="' + point.id + '">' +
+      (isFav ? 'Remover dos Favoritos' : 'Marcar como Favorito') +
+    '</button>' +
+  '</div>';
+}
+
+function buildRecyclingPointsList(points) {
+  const favs = getFavoriteSet();
+  return points.map(function (p) {
+    const favTag = favs.has(p.id) ? '<span class="text-xs px-2 py-0.5 rounded-full bg-secondary-container text-secondary">Favorito</span>' : '';
+    const sourceTag = p.source ? '<span class="text-xs px-2 py-0.5 rounded-full bg-primary-container text-primary">' + escapeHtml(p.source) + '</span>' : '';
+    const distanceText = (typeof p.distanceKm === 'number')
+      ? (p.distanceKm.toFixed(2) + ' km')
+      : (p.distance || '');
+    const distance = distanceText ? '<p class="text-xs text-on-surface-variant">' + escapeHtml(distanceText) + '</p>' : '';
+    return '<li class="p-4 rounded-xl border border-outline card-round bg-white">' +
+      '<div class="flex items-start justify-between gap-3">' +
+        '<div>' +
+          '<p class="font-medium">' + escapeHtml(p.name) + '</p>' +
+          '<p class="text-sm text-on-surface-variant">' + escapeHtml(p.address || '') + '</p>' +
+          distance +
+        '</div>' +
+        '<div class="flex flex-col items-end gap-2">' + favTag + sourceTag + '</div>' +
+      '</div>' +
+      '<button type="button" class="recycling-focus mt-3 w-full py-2 px-3 rounded-lg border border-outline text-sm" data-point-id="' + p.id + '">Ver no mapa</button>' +
+    '</li>';
+  }).join('');
+}
+
+function renderRecyclingListUI() {
+  const listEl = document.getElementById('recycling-points-list');
+  if (!listEl) return;
+  const points = getAllRecyclingPoints();
+  const ordered = orderPointsByDistance(points);
+  const filtered = filterPointsByRadius(ordered);
+  listEl.innerHTML = buildRecyclingPointsList(filtered);
+}
+
+function renderRecyclingMarkers(points) {
+  if (!recyclingMap || !window.L) return;
+  if (recyclingMarkers) recyclingMarkers.remove();
+  recyclingMarkers = L.layerGroup();
+  recyclingMarkerById = {};
+  points.forEach(function (p) {
+    if (!p.lat || !p.lng) return;
+    const marker = L.marker([p.lat, p.lng]).bindPopup(buildPopupHtml(p));
+    marker.addTo(recyclingMarkers);
+    recyclingMarkerById[p.id] = marker;
+  });
+  recyclingMarkers.addTo(recyclingMap);
+}
+
+function toRad(val) {
+  return (val * Math.PI) / 180;
+}
+
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function orderPointsByDistance(points) {
+  if (!recyclingUserLocation) return points.slice();
+  const lat = recyclingUserLocation.lat;
+  const lng = recyclingUserLocation.lng;
+  return points.map(function (p) {
+    if (typeof p.lat === 'number' && typeof p.lng === 'number') {
+      p.distanceKm = haversineKm(lat, lng, p.lat, p.lng);
+    } else {
+      p.distanceKm = undefined;
+    }
+    return p;
+  }).sort(function (a, b) {
+    if (typeof a.distanceKm !== 'number') return 1;
+    if (typeof b.distanceKm !== 'number') return -1;
+    return a.distanceKm - b.distanceKm;
+  });
+}
+
+function filterPointsByRadius(points) {
+  if (!recyclingUserLocation || !recyclingRadiusKm) return points;
+  return points.filter(function (p) {
+    return typeof p.distanceKm !== 'number' || p.distanceKm <= recyclingRadiusKm;
+  });
+}
+
+function updateUserMarker() {
+  if (!recyclingMap || !window.L || !recyclingUserLocation) return;
+  if (recyclingUserMarker) recyclingUserMarker.remove();
+  recyclingUserMarker = L.circleMarker([recyclingUserLocation.lat, recyclingUserLocation.lng], {
+    radius: 8,
+    color: '#2e7d32',
+    fillColor: '#2e7d32',
+    fillOpacity: 0.9,
+  }).bindPopup('<strong>Você está aqui</strong>');
+  recyclingUserMarker.addTo(recyclingMap);
+}
+
+function updateRecyclingStatus(message) {
+  const el = document.getElementById('recycling-status');
+  if (el) el.textContent = message || '';
+}
+
+function shouldReuseNearbyCache(lat, lng, radiusKm) {
+  if (!recyclingNearbyCache) return false;
+  const age = Date.now() - recyclingNearbyCache.ts;
+  if (age > 60000) return false;
+  const dist = haversineKm(lat, lng, recyclingNearbyCache.lat, recyclingNearbyCache.lng);
+  return dist < 0.2 && recyclingNearbyCache.radiusKm === radiusKm;
+}
+
+function parseOverpassElements(elements) {
+  return elements.map(function (el) {
+    const lat = typeof el.lat === 'number' ? el.lat : (el.center && el.center.lat);
+    const lng = typeof el.lon === 'number' ? el.lon : (el.center && el.center.lon);
+    const name = (el.tags && (el.tags.name || el.tags['name:pt'])) || 'Farmácia';
+    const street = el.tags && (el.tags['addr:street'] || '');
+    const number = el.tags && (el.tags['addr:housenumber'] || '');
+    const city = el.tags && (el.tags['addr:city'] || '');
+    const address = [street, number, city].filter(Boolean).join(' ');
+    return {
+      id: 'osm-' + el.type + '-' + el.id,
+      name: name,
+      address: address,
+      lat: lat,
+      lng: lng,
+      source: 'OSM',
+      mediaType: 'image',
+      mediaUrl: 'https://images.unsplash.com/photo-1526256262350-7da7584cf5eb?auto=format&fit=crop&w=800&q=60',
+    };
+  }).filter(function (p) { return typeof p.lat === 'number' && typeof p.lng === 'number'; });
+}
+
+function fetchNearbyPharmacies(lat, lng, radiusKm) {
+  const effectiveRadius = radiusKm && radiusKm > 0 ? radiusKm : 10;
+  if (shouldReuseNearbyCache(lat, lng, effectiveRadius)) {
+    recyclingNearbyPoints = recyclingNearbyCache.points || [];
+    renderRecyclingMarkers(getAllRecyclingPoints());
+    renderRecyclingListUI();
+    return;
+  }
+  updateRecyclingStatus('A procurar farmácias próximas...');
+  const radiusMeters = Math.round(effectiveRadius * 1000);
+  const query = '[out:json][timeout:25];(' +
+    'node[amenity=pharmacy](around:' + radiusMeters + ',' + lat + ',' + lng + ');' +
+    'way[amenity=pharmacy](around:' + radiusMeters + ',' + lat + ',' + lng + ');' +
+    'relation[amenity=pharmacy](around:' + radiusMeters + ',' + lat + ',' + lng + ');' +
+  ');out center;';
+  fetch('https://overpass-api.de/api/interpreter', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+    body: 'data=' + encodeURIComponent(query),
+  }).then(function (r) { return r.json(); }).then(function (data) {
+    recyclingNearbyPoints = parseOverpassElements((data && data.elements) || []);
+    recyclingNearbyCache = { ts: Date.now(), lat: lat, lng: lng, radiusKm: effectiveRadius, points: recyclingNearbyPoints };
+    updateRecyclingStatus(recyclingNearbyPoints.length ? ('Encontradas ' + recyclingNearbyPoints.length + ' farmácias próximas.') : 'Nenhuma farmácia encontrada neste raio.');
+    renderRecyclingMarkers(getAllRecyclingPoints());
+    renderRecyclingListUI();
+  }).catch(function () {
+    updateRecyclingStatus('Não foi possível carregar as farmácias agora.');
+  });
+}
+
+function locateUserAndCenter() {
+  if (!navigator.geolocation) {
+    showToast('Geolocalização não suportada neste navegador.', 'warning');
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(function (pos) {
+    recyclingUserLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    updateUserMarker();
+    recyclingMap.setView([recyclingUserLocation.lat, recyclingUserLocation.lng], 14);
+    fetchNearbyPharmacies(recyclingUserLocation.lat, recyclingUserLocation.lng, recyclingRadiusKm);
+  }, function () {
+    showToast('Não foi possível obter sua localização.', 'warning');
+  }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
+}
+
+function initRecyclingMap() {
+  if (!window.L) return;
+  const mapEl = document.getElementById('recycling-map');
+  if (!mapEl) return;
+  if (recyclingMap) {
+    recyclingMap.remove();
+    recyclingMap = null;
+  }
+  recyclingMap = L.map('recycling-map', { scrollWheelZoom: false });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors',
+  }).addTo(recyclingMap);
+  const points = getAllRecyclingPoints();
+  const fallbackCenter = [41.1496, -8.6109]; // Porto
+  recyclingMap.setView(fallbackCenter, 13);
+  renderRecyclingMarkers(points);
+  locateUserAndCenter();
+}
 
 const DICAS_ARTIGOS = [
   { id: 'paracetamol', title: 'Paracetamol: quando o excesso vira risco', category: 'Medicação', publishedAt: '2024-01-15', readTime: 3, image: 'dicas/imagens/paracetamol.jpg', text: 'O paracetamol é um dos medicamentos mais utilizados em todo o mundo, e não é por acaso, pois é eficaz no alívio da dor e na redução da febre, sendo frequentemente a primeira escolha para tratar sintomas como gripe, dores de cabeça ou dores musculares. No entanto, mesmo os medicamentos mais comuns merecem cuidado e utilização responsável.\n\nPara um uso seguro, é essencial respeitar a dose recomendada, sendo que a dose máxima diária para um adulto é, normalmente, de 4 gramas (4000 mg), devendo sempre seguir as indicações do médico ou do farmacêutico. É também importante evitar a duplicação de medicamentos, uma vez que muitos fármacos para a gripe ou constipações já contêm paracetamol na sua composição, o que pode levar à ingestão excessiva sem que a pessoa se aperceba.\n\nOutro aspeto fundamental é o cuidado com o consumo de álcool, pois a sua associação com o paracetamol pode aumentar significativamente o risco de danos no fígado. No caso das crianças, deve ser utilizada sempre a dose correta de acordo com o peso e a idade, preferencialmente com orientação médica.\n\nO paracetamol é seguro quando usado corretamente, mas o seu uso excessivo pode ser perigoso, podendo causar lesões hepáticas graves. Por isso, sempre que existam dúvidas ou os sintomas persistam, é fundamental procurar um profissional de saúde. Pequenas escolhas conscientes fazem toda a diferença, inclusive na forma como cuidamos da nossa saúde.' },
@@ -103,10 +378,72 @@ function getValidityStatus(expiryDate) {
   return { label: 'Válido', type: 'ok' };
 }
 
+// ---------------------------------------------------
+// UI helpers
+function hashCode(str) {
+  // simple string hash for consistent color generation
+  var h = 0;
+  for (var i = 0; i < str.length; i++) h = (h << 5) - h + str.charCodeAt(i) | 0;
+  return h;
+}
+function getCategoryColor(cat) {
+  if (!cat) return '#a1a1aa';
+  var h = hashCode(cat);
+  // produce pastel color
+  var hue = Math.abs(h) % 360;
+  return 'hsl(' + hue + ', 60%, 80%)';
+}
+
+// toast/snackbar
+function showToast(message, type) {
+  var container = document.getElementById('toast-container');
+  if (!container) return;
+  var div = document.createElement('div');
+  div.className = 'toast toast-' + (type || 'info');
+  div.textContent = message;
+  container.appendChild(div);
+  // trigger animation
+  setTimeout(function () { div.classList.add('show'); }, 20);
+  setTimeout(function () { div.classList.remove('show'); setTimeout(function () { container.removeChild(div); }, 300); }, 3000);
+}
+
+
 function getStockStatus(quantity) {
   if (quantity <= 10) return { label: 'Baixo', type: 'low' };
   if (quantity <= 30) return { label: 'Médio', type: 'medium' };
   return { label: 'OK', type: 'ok' };
+}
+
+// notifications helpers
+function sendNotification(title, body) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  new Notification(title, { body: body });
+}
+
+function checkNotifications() {
+  var settings = getSettings();
+  if (!settings.notifications) return;
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  var meds = getMedications();
+  meds.forEach(function (m) {
+    var v = getValidityStatus(m.expiryDate);
+    if (v.type === 'soon' && !m.notifiedSoon) {
+      sendNotification('Validade próxima', (m.name || 'Medicamento') + ' expira em breve');
+      m.notifiedSoon = true;
+    }
+    if (v.type !== 'soon' && m.notifiedSoon) {
+      m.notifiedSoon = false;
+    }
+    var s = getStockStatus(m.quantity || 0);
+    if (s.type === 'low' && !m.notifiedLow) {
+      sendNotification('Estoque baixo', (m.name || 'Medicamento') + ' está com quantidade baixa');
+      m.notifiedLow = true;
+    }
+    if (s.type !== 'low' && m.notifiedLow) {
+      m.notifiedLow = false;
+    }
+  });
+  setMedications(meds);
 }
 
 function parseHash() {
@@ -176,13 +513,19 @@ function navigate(path, params) {
 function viewHome() {
   const meds = getMedications().filter(function (m) { return m.isActive; });
   const remindersToday = getRemindersForToday().length;
+  const soonList = meds.filter(function (m) { return getValidityStatus(m.expiryDate).type === 'soon'; });
+  const lowStockList = meds.filter(function (m) { return getStockStatus(m.quantity || 0).type === 'low'; });
   return '<header class="relative px-4 flex items-center justify-center gap-3 bg-white">' +
     '<img src="logo.png" alt="DailyMed" class="h-40 w-40 object-contain" />' +
     '</header>' +
     '<main class="p-4 space-y-4 bg-white">' +
     '<div class="grid grid-cols-2 gap-4">' +
-    '<div class="rounded-2xl p-5 bg-white border border-gray-100 shadow-sm text-center"><p class="text-3xl font-bold text-primary">' + meds.length + '</p><p class="text-xs text-black mt-1">Medicamentos Ativos</p></div>' +
-    '<div class="rounded-2xl p-5 bg-white border border-gray-100 shadow-sm text-center"><p class="text-3xl font-bold text-secondary">' + remindersToday + '</p><p class="text-xs text-black mt-1">Lembretes de Hoje</p></div>' +
+    '<a href="#medicacao" class="rounded-2xl p-5 bg-white border border-gray-100 shadow-sm text-center block"><p class="text-3xl font-bold text-primary">' + meds.length + '</p><p class="text-xs text-black mt-1">Medicamentos Ativos</p></a>' +
+    '<a href="#lembretes" class="rounded-2xl p-5 bg-white border border-gray-100 shadow-sm text-center block"><p class="text-3xl font-bold text-secondary">' + remindersToday + '</p><p class="text-xs text-black mt-1">Lembretes de Hoje</p></a>' +
+    '</div>' +
+    '<div class="grid grid-cols-2 gap-4">' +
+    '<a href="#medicacao-armario?filter=expirando" class="rounded-2xl p-5 bg-yellow-50 border border-yellow-200 shadow-sm text-center block"><p class="text-3xl font-bold text-yellow-800">' + soonList.length + '</p><p class="text-xs text-black mt-1">Expira em breve</p></a>' +
+    '<a href="#medicacao-armario?filter=baixo" class="rounded-2xl p-5 bg-red-50 border border-red-200 shadow-sm text-center block"><p class="text-3xl font-bold text-red-800">' + lowStockList.length + '</p><p class="text-xs text-black mt-1">Estoque baixo</p></a>' +
     '</div>' +
     '<a href="#lembretes" class="flex flex-col items-center justify-center gap-2 py-6 px-4 rounded-xl bg-secondary text-white shadow-sm w-full"><span class="material-icons text-4xl">schedule</span><span class="text-sm font-medium">Lembretes</span></a>' +
     '<div class="grid grid-cols-3 gap-3">' +
@@ -207,34 +550,73 @@ function viewMedicacaoCategorias() {
 }
 
 function viewMedicacaoArmario(params) {
-  const filter = params.filter || 'todos';
+  // allow multiple comma-separated filters for combined criteria
+  const filterParam = params.filter || '';
+  const filters = filterParam.split(',').filter(Boolean);
   const search = (params.q || '').toLowerCase();
   const category = params.cat || '';
+  const order = params.order || '';
   let list = getMedications();
   if (category) list = list.filter(function (m) { return m.category === category; });
   if (search) list = list.filter(function (m) { return (m.name || '').toLowerCase().includes(search) || (m.manufacturer || '').toLowerCase().includes(search); });
-  if (filter === 'ativos') list = list.filter(function (m) { return m.isActive; });
-  if (filter === 'stock') list = list.filter(function (m) { return m.isInStock; });
-  if (filter === 'expirando') list = list.filter(function (m) { return getValidityStatus(m.expiryDate).type === 'soon'; });
-  if (filter === 'expirados') list = list.filter(function (m) { return getValidityStatus(m.expiryDate).type === 'expired'; });
-  if (filter === 'baixo') list = list.filter(function (m) { return (m.quantity || 0) <= 10; });
+  if (filters.includes('ativos')) list = list.filter(function (m) { return m.isActive; });
+  if (filters.includes('stock')) list = list.filter(function (m) { return m.isInStock; });
+  if (filters.includes('expirando')) list = list.filter(function (m) { return getValidityStatus(m.expiryDate).type === 'soon'; });
+  if (filters.includes('expirados')) list = list.filter(function (m) { return getValidityStatus(m.expiryDate).type === 'expired'; });
+  if (filters.includes('baixo')) list = list.filter(function (m) { return (m.quantity || 0) <= 10; });
+
+  // ordering
+  if (order === 'expiry-asc') {
+    list.sort(function (a, b) { return new Date(a.expiryDate || '9999-12-31') - new Date(b.expiryDate || '9999-12-31'); });
+  } else if (order === 'expiry-desc') {
+    list.sort(function (a, b) { return new Date(b.expiryDate || '9999-12-31') - new Date(a.expiryDate || '9999-12-31'); });
+  } else if (order === 'quantity-asc') {
+    list.sort(function (a, b) { return (a.quantity || 0) - (b.quantity || 0); });
+  } else if (order === 'quantity-desc') {
+    list.sort(function (a, b) { return (b.quantity || 0) - (a.quantity || 0); });
+  } else if (order === 'name-asc') {
+    list.sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); });
+  } else if (order === 'name-desc') {
+    list.sort(function (a, b) { return (b.name || '').localeCompare(a.name || ''); });
+  }
   const detected = detectInteractions(list);
+  const allMeds = getMedications();
+  const soonCount = allMeds.filter(function (m) { return getValidityStatus(m.expiryDate).type === 'soon'; }).length;
+  const lowCount = allMeds.filter(function (m) { return getStockStatus(m.quantity || 0).type === 'low'; }).length;
   const catQs = category ? '?cat=' + encodeURIComponent(category) : '';
   const filterBase = '#medicacao-armario' + catQs;
+
 
   let listHtml = '';
   list.forEach(function (m) {
     const nameEsc = (m.name || '').replace(/</g, '&lt;');
     const dosageEsc = (m.dosage || '').replace(/</g, '&lt;');
     const titleLine = (nameEsc + ' ' + dosageEsc).trim() || 'Medicamento';
+    const catColor = getCategoryColor(m.category);
+    const titleWithDot = '<span class="inline-block w-2 h-2 rounded-full mr-1" style="background:' + catColor + '"></span>' + titleLine;
     const qty = m.quantity != null ? m.quantity : '-';
     const validadeStr = formatDateYMD(m.expiryDate) || '-';
     const cardBg = m.isActive ? 'bg-primary-container text-gray-800' : 'bg-white border border-gray-200 text-gray-800';
     const dotHtml = m.isActive ? '<span class="absolute top-3 right-3 w-2.5 h-2.5 rounded-full bg-primary" aria-hidden="true" title="Ativo"></span>' : '';
+
+    // status badges
+    const valStatus = getValidityStatus(m.expiryDate);
+    const stockStatus = getStockStatus(m.quantity || 0);
+    let badges = '';
+    if (valStatus.type === 'soon') {
+      badges += '<span class="inline-block text-xs font-semibold text-yellow-800 bg-yellow-100 px-2 py-0.5 rounded-full mr-1">Expira em breve</span>';
+    } else if (valStatus.type === 'expired') {
+      badges += '<span class="inline-block text-xs font-semibold text-red-800 bg-red-100 px-2 py-0.5 rounded-full mr-1">Expirado</span>';
+    }
+    if (stockStatus.type === 'low') {
+      badges += '<span class="inline-block text-xs font-semibold text-red-800 bg-red-100 px-2 py-0.5 rounded-full mr-1">Estoque baixo</span>';
+    }
+
     listHtml += '<div class="rounded-2xl p-4 shadow-sm ' + cardBg + ' relative">' +
       dotHtml +
       '<div class="med-card-detail cursor-pointer block focus:outline-none" data-id="' + m.id + '" role="button" tabindex="0">' +
-      '<p class="font-bold text-sm leading-tight pr-6">' + titleLine + '</p>' +
+      '<p class="font-bold text-sm leading-tight pr-6">' + titleWithDot + '</p>' +
+      (badges ? '<div class="mt-1">' + badges + '</div>' : '') +
       '<p class="text-sm text-gray-600 mt-0.5">' + dosageEsc + '</p>' +
       '<p class="text-sm text-gray-600 mt-0.5">' + qty + ' unidades</p>' +
       '<p class="text-sm text-gray-600 mt-0.5">Validade: ' + validadeStr + '</p>' +
@@ -243,16 +625,47 @@ function viewMedicacaoArmario(params) {
       '</div>';
   });
 
-  let filterLinks = '<a href="' + filterBase + '" class="inline-flex items-center gap-1.5 whitespace-nowrap px-4 py-2 rounded-full text-sm ' + (!filter ? 'bg-gray-200 text-gray-800' : 'bg-gray-100 text-gray-600') + '">' + (!filter ? '<span class="w-2 h-2 rounded-full bg-primary"></span>' : '') + 'Todos</a>';
-  filterLinks += '<a href="' + filterBase + (catQs ? '&' : '?') + 'filter=ativos' + '" class="inline-flex items-center gap-1.5 whitespace-nowrap px-4 py-2 rounded-full text-sm ' + (filter === 'ativos' ? 'bg-gray-200 text-gray-800' : 'bg-gray-100 text-gray-600') + '">' + (filter === 'ativos' ? '<span class="w-2 h-2 rounded-full bg-primary"></span>' : '') + 'Medicamentos Ativos</a>';
-  ['stock', 'expirando', 'expirados', 'baixo'].forEach(function (f) {
-    const label = f === 'stock' ? 'Em Stock' : f === 'expirando' ? 'Expirando' : f === 'expirados' ? 'Expirados' : 'Estoque baixo';
-    const sep = catQs ? '&' : '?';
-    filterLinks += '<a href="' + filterBase + sep + 'filter=' + f + '" class="inline-flex items-center gap-1.5 whitespace-nowrap px-4 py-2 rounded-full text-sm ' + (filter === f ? 'bg-gray-200 text-gray-800' : 'bg-gray-100 text-gray-600') + '">' + (filter === f ? '<span class="w-2 h-2 rounded-full bg-primary"></span>' : '') + label + '</a>';
+  // build filter chips supporting multiple active selections
+  // helper to build URL preserving search and order
+  function buildUrlWith(filterStr) {
+    var url = filterBase;
+    var sep = url.indexOf('?') >= 0 ? '&' : '?';
+    var parts = [];
+    if (filterStr) parts.push('filter=' + encodeURIComponent(filterStr));
+    if (params.q) parts.push('q=' + encodeURIComponent(params.q));
+    if (order) parts.push('order=' + encodeURIComponent(order));
+    if (parts.length) url += sep + parts.join('&');
+    return url;
+  }
+  let filterLinks = '<a href="' + buildUrlWith('') + '" class="inline-flex items-center gap-1.5 whitespace-nowrap px-4 py-2 rounded-full text-sm ' + (filters.length === 0 ? 'bg-gray-200 text-gray-800' : 'bg-gray-100 text-gray-600') + '">' + (filters.length === 0 ? '<span class="w-2 h-2 rounded-full bg-primary"></span>' : '') + 'Todos</a>';
+  // individual chips
+  const allFilters = ['ativos','stock','expirando','expirados','baixo'];
+  allFilters.forEach(function (f) {
+    const labels = { ativos:'Medicamentos Ativos', stock:'Em Stock', expirando:'Expirando', expirados:'Expirados', baixo:'Estoque baixo' };
+    const label = labels[f];
+    const isActive = filters.includes(f);
+    // compute new filter list when toggling this chip
+    const newFilters = isActive ? filters.filter(function(x){ return x !== f; }) : filters.concat(f);
+    const filterParam = newFilters.join(',');
+    filterLinks += '<a href="' + buildUrlWith(filterParam) + '" class="inline-flex items-center gap-1.5 whitespace-nowrap px-4 py-2 rounded-full text-sm ' + (isActive ? 'bg-gray-200 text-gray-800' : 'bg-gray-100 text-gray-600') + '">' + (isActive ? '<span class="w-2 h-2 rounded-full bg-primary"></span>' : '') + label + '</a>';
   });
+  // ordering select
+  const orderOptions = [
+    {v:'',l:'Ordenar'},
+    {v:'expiry-asc',l:'Validade \u2191'},
+    {v:'expiry-desc',l:'Validade \u2193'},
+    {v:'quantity-asc',l:'Quantidade \u2191'},
+    {v:'quantity-desc',l:'Quantidade \u2193'},
+    {v:'name-asc',l:'Nome A-Z'},
+    {v:'name-desc',l:'Nome Z-A'}
+  ];
+  let orderSel = '<select id="armario-order" class="px-3 py-2 rounded-lg border border-gray-200 text-sm ml-2">';
+  orderOptions.forEach(function(o){
+    orderSel += '<option value="'+o.v+'"'+(order===o.v?' selected':'')+'>'+o.l+'</option>';
+  });
+  orderSel += '</select>';
+  filterLinks += orderSel;
 
-  let banner = '';
-  if (detected.length > 0) banner = '<a href="#medicacao-interacoes" class="block p-3 rounded-xl bg-red-50 border border-red-200 text-red-800 text-sm"><span class="material-icons align-middle text-lg mr-1">warning</span>Atenção: ' + detected.length + ' interação(ões) detetada(s). Toque para ver.</a>';
   const gridOrEmpty = list.length === 0
     ? '<p class="text-center text-on-surface-variant py-8">Nenhum medicamento encontrado.</p>'
     : '<div class="grid grid-cols-2 gap-3">' + listHtml + '</div><button type="button" id="btn-adicionar-medicamento-fab" class="fixed bottom-24 right-4 w-14 h-14 rounded-full bg-primary text-on-primary flex items-center justify-center shadow-lg" aria-label="Adicionar medicamento"><span class="material-icons">add</span></button>';
@@ -265,7 +678,6 @@ function viewMedicacaoArmario(params) {
     '<div class="flex flex-wrap gap-2">' + filterLinks + '</div>' +
     '<p class="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-sm bg-gray-100 text-gray-700"><span class="w-2 h-2 rounded-full bg-primary"></span>Medicamentos Ativos</p>' +
     (category ? '<p class="text-sm text-on-surface-variant">Categoria: ' + category.replace(/</g, '&lt;') + '</p>' : '') +
-    banner +
     gridOrEmpty +
     '</main>';
 }
@@ -281,6 +693,7 @@ function viewMedicacaoAdicionar(params) {
     '<section class="med-form-section">' +
     '<h3 class="med-form-section-title"><span class="material-icons text-lg">medication</span>Identificação</h3>' +
     '<div class="space-y-3">' +
+    '<p class="text-sm text-on-surface-variant">Registe a <strong>data de validade</strong> e a <strong>quantidade disponível</strong> para receber alertas automáticos antes da expiração e quando o stock estiver baixo.</p>' +
     '<div class="relative"><label class="med-form-label">Nome *</label><input type="text" name="name" required placeholder="Pesquisar ou escrever..." class="w-full px-4 py-2.5 input-outline" id="med-name" value="' + nameVal + '" autocomplete="off" /><ul class="autocomplete-list absolute left-0 right-0 z-10 mt-1 bg-white border border-outline rounded-xl shadow-lg max-h-60 overflow-y-auto hidden" id="autocomplete-list"></ul></div>' +
     '<div><label class="med-form-label">Dosagem *</label><input type="text" name="dosage" required class="w-full px-4 py-2.5 input-outline" value="' + dosageVal + '" /></div>' +
     '<div><label class="med-form-label">Substância ativa</label><input type="text" name="substance" class="w-full px-4 py-2.5 input-outline bg-gray-50" id="med-substance" value="' + substanceVal + '" readonly /></div>' +
@@ -328,6 +741,7 @@ function viewMedicacaoEditar(params) {
     '<section class="med-form-section">' +
     '<h3 class="med-form-section-title"><span class="material-icons text-lg">medication</span>Identificação</h3>' +
     '<div class="space-y-3">' +
+    '<p class="text-sm text-on-surface-variant">Atualize também a quantidade e data de validade para que o sistema possa avisar sobre stock crítico e prazos próximos.</p>' +
     '<div><label class="med-form-label">Nome *</label><input type="text" name="name" required class="w-full px-4 py-2.5 input-outline" value="' + (m.name || '').replace(/"/g, '&quot;') + '" /></div>' +
     '<div><label class="med-form-label">Dosagem *</label><input type="text" name="dosage" required class="w-full px-4 py-2.5 input-outline" value="' + (m.dosage || '').replace(/"/g, '&quot;') + '" /></div>' +
     '<div><label class="med-form-label">Substância ativa</label><input type="text" name="substance" class="w-full px-4 py-2.5 input-outline" value="' + (m.substance || '').replace(/"/g, '&quot;') + '" /></div>' +
@@ -362,10 +776,32 @@ function viewMedicacaoPesquisar() {
 function viewMedicacaoInteracoes() {
   const detected = detectInteractions();
   const known = getKnownInteractions();
-  let detHtml = detected.length === 0 ? '<p class="text-on-surface-variant">Nenhuma interação detetada.</p>' : '<ul class="space-y-3">' + detected.map(function (i) { return '<li class="p-3 rounded-xl border-l-4" style="border-color:' + i.color + '"><p class="font-medium">' + i.combination + '</p><p class="text-sm capitalize">' + i.severity + '</p><p class="text-sm mt-1">' + i.mechanism + '</p></li>'; }).join('') + '</ul>';
-  let knownHtml = '<ul class="space-y-3">' + known.map(function (i) { return '<li class="p-3 rounded-xl border border-outline" style="border-left-width:4px;border-left-color:' + i.color + '"><p class="font-medium">' + i.combination + '</p><p class="text-sm capitalize">' + i.severity + '</p><p class="text-sm mt-1">' + i.mechanism + '</p></li>'; }).join('') + '</ul>';
+  let detHtml = detected.length === 0 ? '<p class="text-on-surface-variant">Nenhuma interação detetada.</p>' : '<ul class="space-y-3" id="detected-interactions">' + detected.map(function (i) { return '<li class="p-3 rounded-xl border-l-4" style="border-color:' + i.color + '" data-severity="' + i.severity + '"><div class="flex items-center justify-between gap-2"><p class="font-medium">' + i.combination + '</p><span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 capitalize">' + i.severity + '</span></div><p class="text-sm mt-1">' + i.mechanism + '</p></li>'; }).join('') + '</ul>';
+  let knownHtml = '<ul class="space-y-3">' + known.map(function (i) { return '<li class="p-3 rounded-xl border border-outline" style="border-left-width:4px;border-left-color:' + i.color + '"><div class="flex items-center justify-between gap-2"><p class="font-medium">' + i.combination + '</p><span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 capitalize">' + i.severity + '</span></div><p class="text-sm mt-1">' + i.mechanism + '</p></li>'; }).join('') + '</ul>';
   return pageHeader('Interações Medicamentosas', '#medicacao-armario') +
-    '<main class="p-4 space-y-6 bg-white"><section><h2 class="font-bold text-lg mb-2">Interações detetadas no seu armário</h2>' + detHtml + '</section><section><h2 class="font-bold text-lg mb-2">Interações que a app verifica</h2>' + knownHtml + '</section></main>';
+    '<main class="p-4 space-y-6 bg-white">' +
+      '<section class="space-y-3">' +
+        '<div class="flex items-center justify-between gap-3">' +
+          '<h2 class="font-bold text-lg">Interações detetadas no seu armário</h2>' +
+          '<select id="interaction-filter" class="px-3 py-2 rounded-lg border border-outline text-sm">' +
+            '<option value="all" selected>Todas</option>' +
+            '<option value="grave">Graves</option>' +
+            '<option value="moderada">Moderadas</option>' +
+            '<option value="ligeira">Ligeiras</option>' +
+          '</select>' +
+        '</div>' +
+        '<p class="text-xs text-on-surface-variant">Deteção automática baseada nos produtos registados. Confirme sempre com um profissional de saúde.</p>' +
+        detHtml +
+      '</section>' +
+      '<section class="space-y-3">' +
+        '<h2 class="font-bold text-lg">Interações online (openFDA)</h2>' +
+        '<p class="text-xs text-on-surface-variant">Consulta dos rótulos oficiais da FDA. Pode demorar alguns segundos.</p>' +
+        '<button type="button" id="openfda-fetch" class="w-full py-3 bg-secondary text-white rounded-xl">Buscar interações online</button>' +
+        '<div id="openfda-status" class="text-xs text-on-surface-variant"></div>' +
+        '<div id="openfda-results" class="space-y-3"></div>' +
+      '</section>' +
+      '<section><h2 class="font-bold text-lg mb-2">Interações que a app verifica</h2>' + knownHtml + '</section>' +
+    '</main>';
 }
 
 function viewMedicacaoHistorico() {
@@ -530,22 +966,97 @@ function viewReciclagemRegistar() {
 }
 
 function viewReciclagemGuia() {
+  // improved visual layout using card-like sections and lists
   return pageHeader('Guia de Reciclagem', '#reciclagem') +
-    '<main class="p-4 prose prose-sm max-w-none bg-white"><h2>O que entregar (Valormed)</h2><p>Medicamentos fora de prazo, embalagens vazias, medicamentos veterinários.</p><h2>O que não fazer</h2><p>Não deitar no lixo comum nem na sanita.</p><h2>Onde entregar</h2><p>Farmácias e parafarmácias aderentes.</p><h2>Cuidados</h2><p>Entregar embalagens fechadas e retirar dados pessoais.</p></main>';
+    '<main class="p-4 bg-white space-y-4">' +
+      '<section class="rounded-xl p-4 border border-gray-200 bg-primary-container recycling-guide-section">' +
+        '<h2 class="text-lg font-bold mb-2 flex items-center gap-2"><span class="material-icons text-primary">recycling</span>O que entregar</h2>' +
+        '<ul class="list-disc list-inside space-y-1 text-sm ml-4">' +
+          '<li>Medicamentos fora de prazo</li>' +
+          '<li>Embalagens vazias</li>' +
+          '<li>Medicamentos veterinários</li>' +
+        '</ul>' +
+      '</section>' +
+      '<section class="rounded-xl p-4 border border-gray-200 bg-red-50 recycling-guide-section">' +
+        '<h2 class="text-lg font-bold mb-2 flex items-center gap-2"><span class="material-icons text-error">warning</span>O que não fazer</h2>' +
+        '<ul class="list-disc list-inside space-y-1 text-sm ml-4">' +
+          '<li>Não deitar no lixo comum</li>' +
+          '<li>Não deitar na sanita</li>' +
+        '</ul>' +
+      '</section>' +
+      '<section class="rounded-xl p-4 border border-gray-200 bg-secondary-container recycling-guide-section">' +
+        '<h2 class="text-lg font-bold mb-2 flex items-center gap-2"><span class="material-icons text-secondary">place</span>Onde entregar</h2>' +
+        '<p class="text-sm">Farmácias e parafarmácias aderentes.</p>' +
+      '</section>' +
+      '<section class="rounded-xl p-4 border border-gray-200 bg-primary-container recycling-guide-section">' +
+        '<h2 class="text-lg font-bold mb-2 flex items-center gap-2"><span class="material-icons text-primary">info</span>Cuidados</h2>' +
+        '<ul class="list-disc list-inside space-y-1 text-sm ml-4">' +
+          '<li>Entregar embalagens fechadas</li>' +
+          '<li>Retirar dados pessoais</li>' +
+        '</ul>' +
+      '</section>' +
+    '</main>';
 }
 
 function viewReciclagemPontos() {
-  const pointsHtml = RECYCLING_POINTS.map(function (p, i) { return '<li><a href="#reciclagem-ponto?id=' + i + '" class="block p-4 rounded-xl border border-outline card-round"><div class="flex items-start gap-3"><span class="material-icons text-primary">location_on</span><div><p class="font-medium">' + p.name + '</p><p class="text-sm text-on-surface-variant">' + p.address + '</p><p class="text-sm flex items-center gap-1"><span class="material-icons text-sm">straighten</span> ' + p.distance + '</p></div></div></a></li>'; }).join('');
-  return pageHeader('Localizador de Pontos', '#reciclagem') +
-    '<main class="p-4 bg-white"><ul class="space-y-3">' + pointsHtml + '</ul></main>';
+  const points = getAllRecyclingPoints();
+  const pointsHtml = buildRecyclingPointsList(points);
+  return pageHeader('Guia de Reciclagem', '#reciclagem') +
+    '<main class="p-4 bg-white space-y-4">' +
+      '<section class="space-y-2">' +
+        '<h3 class="font-bold text-base">Mapa Interativo</h3>' +
+        '<p class="text-sm text-on-surface-variant">Toque nos marcadores para ver detalhes, media e marcar favoritos.</p>' +
+        '<div class="flex items-center gap-2">' +
+          '<button type="button" id="recycling-locate-btn" class="px-3 py-2 rounded-lg border border-outline text-sm">Minha localização</button>' +
+          '<select id="recycling-radius" class="px-3 py-2 rounded-lg border border-outline text-sm">' +
+            '<option value="1">Até 1 km</option>' +
+            '<option value="3">Até 3 km</option>' +
+            '<option value="5" selected>Até 5 km</option>' +
+            '<option value="10">Até 10 km</option>' +
+            '<option value="0">Sem filtro</option>' +
+          '</select>' +
+        '</div>' +
+        '<p id="recycling-status" class="text-xs text-on-surface-variant"></p>' +
+        '<div class="recycling-map-shell"><div id="recycling-map" aria-label="Mapa de pontos de reciclagem"></div></div>' +
+      '</section>' +
+      '<section class="space-y-3">' +
+        '<h3 class="font-bold text-base">Pontos Disponíveis</h3>' +
+        '<ul id="recycling-points-list" class="space-y-3">' + pointsHtml + '</ul>' +
+      '</section>' +
+      '<section class="space-y-3">' +
+        '<h3 class="font-bold text-base">Adicionar Novo Ponto</h3>' +
+        '<form id="form-add-recycling-point" class="space-y-3">' +
+          '<div><label class="block text-sm font-medium mb-1">Nome *</label><input type="text" name="name" required class="w-full px-4 py-2 input-outline" placeholder="Ex: Ecoponto do Chiado" /></div>' +
+          '<div><label class="block text-sm font-medium mb-1">Morada</label><input type="text" name="address" class="w-full px-4 py-2 input-outline" placeholder="Rua, número, cidade" /></div>' +
+          '<div class="grid grid-cols-2 gap-3">' +
+            '<div><label class="block text-sm font-medium mb-1">Latitude *</label><input type="number" name="lat" required step="0.000001" class="w-full px-4 py-2 input-outline" placeholder="38.716" /></div>' +
+            '<div><label class="block text-sm font-medium mb-1">Longitude *</label><input type="number" name="lng" required step="0.000001" class="w-full px-4 py-2 input-outline" placeholder="-9.139" /></div>' +
+          '</div>' +
+          '<div class="grid grid-cols-2 gap-3">' +
+            '<div><label class="block text-sm font-medium mb-1">Tipo de media</label><select name="mediaType" class="w-full px-4 py-2 input-outline"><option value="image">Imagem</option><option value="video">Vídeo</option></select></div>' +
+            '<div><label class="block text-sm font-medium mb-1">URL do media</label><input type="url" name="mediaUrl" class="w-full px-4 py-2 input-outline" placeholder="https://..." /></div>' +
+          '</div>' +
+          '<button type="submit" class="w-full py-3 bg-primary text-on-primary font-medium rounded-xl btn-round">Adicionar Ponto</button>' +
+        '</form>' +
+      '</section>' +
+    '</main>';
 }
 
 function viewReciclagemPonto(params) {
-  const id = parseInt(params.id, 10);
-  const p = RECYCLING_POINTS[id];
+  const points = getAllRecyclingPoints();
+  const idParam = params.id || '';
+  let p = points.find(function (x) { return x.id === idParam; });
+  if (!p && idParam !== '') {
+    const idx = parseInt(idParam, 10);
+    if (!isNaN(idx)) p = points[idx];
+  }
   if (!p) return viewReciclagemPontos();
   return pageHeader(p.name, '#reciclagem-pontos') +
-    '<main class="p-4 space-y-2 bg-white"><p><span class="material-icons align-middle text-lg mr-1">location_on</span> ' + p.address + '</p><p><span class="material-icons align-middle text-lg mr-1">straighten</span> ' + p.distance + '</p><p class="text-sm text-on-surface-variant">Ponto de recolha Valormed.</p></main>';
+    '<main class="p-4 space-y-2 bg-white">' +
+      '<p><span class="material-icons align-middle text-lg mr-1">location_on</span> ' + escapeHtml(p.address || '') + '</p>' +
+      (p.distance ? '<p><span class="material-icons align-middle text-lg mr-1">straighten</span> ' + escapeHtml(p.distance) + '</p>' : '') +
+      '<p class="text-sm text-on-surface-variant">Ponto de recolha com indicação de reciclagem.</p>' +
+    '</main>';
 }
 
 function viewReciclagemHistorico() {
@@ -578,7 +1089,7 @@ function viewPerfil() {
 function viewDefinicoes() {
   const s = getSettings();
   return pageHeader('Definições', '#perfil') +
-    '<main class="p-4 space-y-4 bg-white"><div class="flex items-center justify-between p-4 rounded-xl border border-gray-200"><span class="font-medium text-black">Notificações</span><input type="checkbox" id="setting-notifications" ' + (s.notifications ? 'checked' : '') + ' class="rounded" /></div><div class="flex items-center justify-between p-4 rounded-xl border border-gray-200"><span class="font-medium text-black">Tema</span><select id="setting-theme" class="px-3 py-2 rounded-lg border border-gray-200"><option value="light"' + (s.theme === 'light' ? ' selected' : '') + '>Claro</option><option value="dark"' + (s.theme === 'dark' ? ' selected' : '') + '>Escuro</option></select></div></main>';
+    '<main class="p-4 space-y-4 bg-white"><div class="flex flex-col p-4 rounded-xl border border-gray-200"><span class="font-medium text-black">Notificações</span><label class="text-sm text-on-surface-variant mt-1">Receber alertas quando medicamentos estiverem a expirar ou com stock baixo. É necessário permitir notificações no seu navegador.</label><input type="checkbox" id="setting-notifications" ' + (s.notifications ? 'checked' : '') + ' class="mt-2 rounded" /></div><div class="flex items-center justify-between p-4 rounded-xl border border-gray-200"><span class="font-medium text-black">Tema</span><select id="setting-theme" class="px-3 py-2 rounded-lg border border-gray-200"><option value="auto"' + (s.theme === 'auto' ? ' selected' : '') + '>Automático</option><option value="light"' + (s.theme === 'light' ? ' selected' : '') + '>Claro</option><option value="dark"' + (s.theme === 'dark' ? ' selected' : '') + '>Escuro</option></select></div></main>';
 }
 
 const ROUTES = {
@@ -625,18 +1136,190 @@ function runRoute() {
   const showNav = ['home', 'medicacao', 'lembretes', 'reciclagem', 'dicas'].indexOf(pathNorm.split('-')[0]) >= 0;
   render(fn(parsed.params), showNav);
   afterRender(pathNorm, parsed.params);
+  // after rendering any view we can check for notifications
+  checkNotifications();
 }
 
 function afterRender(path, params) {
+  if (path === 'reciclagem-pontos') {
+    initRecyclingMap();
+    renderRecyclingListUI();
+    const locateBtn = document.getElementById('recycling-locate-btn');
+    if (locateBtn) {
+      locateBtn.addEventListener('click', function () {
+        locateUserAndCenter();
+      });
+    }
+    const radiusSel = document.getElementById('recycling-radius');
+    if (radiusSel) {
+      radiusSel.value = String(recyclingRadiusKm || 0);
+      radiusSel.addEventListener('change', function () {
+        const v = parseFloat(radiusSel.value);
+        recyclingRadiusKm = isNaN(v) ? 0 : v;
+        if (recyclingUserLocation) {
+          fetchNearbyPharmacies(recyclingUserLocation.lat, recyclingUserLocation.lng, recyclingRadiusKm);
+        } else {
+          renderRecyclingListUI();
+        }
+      });
+    }
+    const form = document.getElementById('form-add-recycling-point');
+    if (form) {
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const name = (fd.get('name') || '').toString().trim();
+        const address = (fd.get('address') || '').toString().trim();
+        const lat = parseFloat((fd.get('lat') || '').toString());
+        const lng = parseFloat((fd.get('lng') || '').toString());
+        const mediaType = (fd.get('mediaType') || 'image').toString();
+        const mediaUrl = (fd.get('mediaUrl') || '').toString().trim();
+        if (!name) { showToast('Indique o nome do ponto.', 'warning'); return; }
+        if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+          showToast('Coordenadas inválidas. Verifique latitude e longitude.', 'warning');
+          return;
+        }
+        const point = {
+          id: 'custom-' + genId(),
+          name: name,
+          address: address,
+          lat: lat,
+          lng: lng,
+          mediaType: mediaType === 'video' ? 'video' : 'image',
+          mediaUrl: mediaUrl,
+          createdAt: todayStr(),
+        };
+        const list = getRecyclingPoints();
+        list.push(point);
+        setRecyclingPoints(list);
+        renderRecyclingMarkers(getAllRecyclingPoints());
+        renderRecyclingListUI();
+        if (recyclingMap && recyclingMarkerById[point.id]) {
+          recyclingMap.setView([point.lat, point.lng], 15);
+          recyclingMarkerById[point.id].openPopup();
+        }
+        form.reset();
+        showToast('Ponto adicionado com sucesso.', 'success');
+      });
+    }
+  }
   var armarioSearch = document.getElementById('armario-search');
   if (armarioSearch) {
     var currentParams = parseHash().params;
     armarioSearch.addEventListener('input', function () {
       var q = armarioSearch.value.trim();
-      var np = { filter: currentParams.filter, cat: currentParams.cat };
+      var np = { filter: currentParams.filter, cat: currentParams.cat, order: currentParams.order };
       if (q) np.q = q;
       navigate('medicacao-armario', np);
     });
+  }
+  var orderEl = document.getElementById('armario-order');
+  if (orderEl) {
+    orderEl.addEventListener('change', function () {
+      var cp = parseHash().params;
+      var np = { filter: cp.filter, cat: cp.cat, q: cp.q };
+      if (orderEl.value) np.order = orderEl.value;
+      navigate('medicacao-armario', np);
+    });
+  }
+  // if we're on the armario view, show toasts instead of banners
+  if (path === 'medicacao-armario') {
+    var medsList = getMedications();
+    var filter = parseHash().params.filter || '';
+    var filters = filter.split(',').filter(Boolean);
+    var detected2 = detectInteractions();
+    if (detected2.length > 0) showToast(detected2.length + ' interação(ões) detetada(s)', 'warning');
+    var soonCount2 = medsList.filter(function (m) { return getValidityStatus(m.expiryDate).type === 'soon'; }).length;
+    var lowCount2 = medsList.filter(function (m) { return getStockStatus(m.quantity || 0).type === 'low'; }).length;
+    if (soonCount2 > 0) showToast(soonCount2 + ' medicamento(s) expiram em breve', 'warning');
+    if (lowCount2 > 0) showToast(lowCount2 + ' medicamento(s) com estoque baixo', 'warning');
+  }
+
+  if (path === 'medicacao-interacoes') {
+    var filterSel = document.getElementById('interaction-filter');
+    if (filterSel) {
+      filterSel.addEventListener('change', function () {
+        var val = filterSel.value;
+        var list = document.getElementById('detected-interactions');
+        if (!list) return;
+        list.querySelectorAll('li').forEach(function (li) {
+          if (val === 'all') li.classList.remove('hidden');
+          else li.classList.toggle('hidden', li.getAttribute('data-severity') !== val);
+        });
+      });
+    }
+
+    var fetchBtn = document.getElementById('openfda-fetch');
+    if (fetchBtn) {
+      fetchBtn.addEventListener('click', function () {
+        var meds = getMedications().filter(function (m) { return m.isActive; });
+        var statusEl = document.getElementById('openfda-status');
+        var resultsEl = document.getElementById('openfda-results');
+        if (resultsEl) resultsEl.innerHTML = '';
+        if (!meds.length) {
+          if (statusEl) statusEl.textContent = 'Adicione medicamentos ativos no armário para pesquisar.';
+          return;
+        }
+        if (statusEl) statusEl.textContent = 'A consultar openFDA...';
+        fetchBtn.disabled = true;
+
+        var idx = 0;
+        function next() {
+          if (idx >= meds.length) {
+            if (statusEl) statusEl.textContent = 'Consulta concluída.';
+            fetchBtn.disabled = false;
+            return;
+          }
+          var m = meds[idx++];
+          var term = (m.substance || m.name || '').toString();
+          fetchOpenFdaLabelInfo(term).then(function (info) {
+            if (info && resultsEl) {
+              var title = (info.genericName || info.brandName || term || 'Medicamento').toString();
+              var interactions = info.interactions || 'Sem informação de interações no rótulo.';
+              var warnings = info.boxedWarning || info.warnings || info.precautions || '';
+              var block = '<div class="p-3 rounded-xl border border-outline bg-white">' +
+                '<p class="font-medium">' + escapeHtml(title) + '</p>' +
+                '<p class="text-xs text-on-surface-variant mb-2">Fonte: openFDA (rótulos oficiais)</p>' +
+                '<p class="text-sm mb-2">' + escapeHtml(interactions.slice(0, 600)) + '</p>' +
+                (warnings ? '<p class="text-xs text-on-surface-variant"><strong>Aviso:</strong> ' + escapeHtml(warnings.slice(0, 300)) + '</p>' : '') +
+              '</div>';
+              resultsEl.insertAdjacentHTML('beforeend', block);
+            }
+          }).catch(function () {
+            if (resultsEl) {
+              resultsEl.insertAdjacentHTML('beforeend', '<div class="p-3 rounded-xl border border-outline bg-white"><p class="font-medium">' + escapeHtml(term) + '</p><p class="text-xs text-on-surface-variant">Falha ao consultar openFDA.</p></div>');
+            }
+          }).finally(function () {
+            setTimeout(next, 250);
+          });
+        }
+        next();
+      });
+    }
+  }
+
+  if (!recyclingHandlersBound) {
+    document.addEventListener('click', function (e) {
+      const favBtn = e.target.closest('.recycling-favorite-btn');
+      if (favBtn) {
+        const id = favBtn.getAttribute('data-point-id');
+        const isFav = toggleFavoritePoint(id);
+        favBtn.classList.toggle('is-active', isFav);
+        favBtn.textContent = isFav ? 'Remover dos Favoritos' : 'Marcar como Favorito';
+        renderRecyclingListUI();
+        return;
+      }
+      const focusBtn = e.target.closest('.recycling-focus');
+      if (focusBtn && recyclingMap) {
+        const id = focusBtn.getAttribute('data-point-id');
+        const marker = recyclingMarkerById[id];
+        if (marker) {
+          recyclingMap.setView(marker.getLatLng(), 15);
+          marker.openPopup();
+        }
+      }
+    });
+    recyclingHandlersBound = true;
   }
 
   var medName = document.getElementById('med-name');
@@ -715,8 +1398,11 @@ function afterRender(path, params) {
       reminderTimes: [],
       dailyDosage: '',
       imageUri: imageUri || null,
+      notifiedSoon: false,
+      notifiedLow: false,
     };
     saveMedication(med);
+    showToast('Medicamento guardado', 'success');
     var detected = detectInteractions();
     if (detected.length > 0) {
       showInteractionsModal(detected, function () { navigate('medicacao-armario'); });
@@ -744,6 +1430,9 @@ function afterRender(path, params) {
       m.posology = fd.get('posology') || '';
       m.indication = fd.get('indication') || '';
       m.notes = fd.get('notes') || '';
+      // clear any previous notification state when editing
+      m.notifiedSoon = false;
+      m.notifiedLow = false;
       saveMedication(m);
       navigate('medicacao-detalhes', { id: id });
     });
@@ -754,6 +1443,7 @@ function afterRender(path, params) {
     btn.addEventListener('click', function () {
       if (confirm('Remover este medicamento?')) {
         deleteMedication(btn.dataset.id);
+        showToast('Medicamento removido', 'success');
         runRoute();
       }
     });
@@ -1101,7 +1791,7 @@ function afterRender(path, params) {
   if (themeSelect) {
     themeSelect.addEventListener('change', function () {
       setSettings({ theme: themeSelect.value });
-      document.getElementById('body-theme').classList.toggle('dark', themeSelect.value === 'dark');
+      applyTheme();
     });
   }
 }
@@ -1124,8 +1814,8 @@ function showAddMedicationModal() {
 }
 
 function showInteractionsModal(detected, onClose) {
-  var listHtml = detected.map(function (i) { return '<li class="p-2 rounded border-l-4" style="border-color:' + i.color + '"><p class="font-medium text-sm">' + i.combination + '</p><p class="text-xs">' + i.mechanism + '</p></li>'; }).join('');
-  var html = '<div id="modal-overlay" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div class="bg-white rounded-2xl max-w-md w-full max-h-[80vh] overflow-y-auto p-4"><h3 class="font-bold text-lg mb-2">Interações detetadas</h3><p class="text-sm text-on-surface-variant mb-4">Consulte um profissional de saúde.</p><ul class="space-y-2 mb-4">' + listHtml + '</ul><button type="button" id="modal-close-btn" class="w-full py-3 bg-primary text-white rounded-xl">Entendi</button></div></div>';
+  var listHtml = detected.map(function (i) { return '<li class="p-2 rounded border-l-4" style="border-color:' + i.color + '"><div class="flex items-center justify-between gap-2"><p class="font-medium text-sm">' + i.combination + '</p><span class="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 capitalize">' + i.severity + '</span></div><p class="text-xs mt-1">' + i.mechanism + '</p></li>'; }).join('');
+  var html = '<div id="modal-overlay" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"><div class="bg-white rounded-2xl max-w-md w-full max-h-[80vh] overflow-y-auto p-4"><h3 class="font-bold text-lg mb-2">Interações detetadas</h3><p class="text-sm text-on-surface-variant mb-4">Esta análise é automática. Confirme sempre com um profissional de saúde.</p><ul class="space-y-2 mb-4">' + listHtml + '</ul><button type="button" id="modal-close-btn" class="w-full py-3 bg-primary text-white rounded-xl">Entendi</button></div></div>';
   document.body.insertAdjacentHTML('beforeend', html);
   document.getElementById('modal-close-btn').addEventListener('click', function () { document.getElementById('modal-overlay').remove(); if (onClose) onClose(); });
   document.getElementById('modal-overlay').addEventListener('click', function (e) { if (e.target.id === 'modal-overlay') { document.getElementById('modal-overlay').remove(); if (onClose) onClose(); } });
@@ -1180,6 +1870,13 @@ function showMedicationDetailModal(m) {
   });
 }
 
+function applyTheme() {
+  var s = getSettings();
+  var prefers = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  var dark = s.theme === 'dark' || (s.theme === 'auto' && prefers);
+  document.getElementById('body-theme').classList.toggle('dark', dark);
+}
+
 function init() {
   loadInfomed().catch(function () {});
   seedMedicationsIfEmpty();
@@ -1193,7 +1890,12 @@ function init() {
   });
   if (changed) setMedications(meds);
   var s = getSettings();
-  document.getElementById('body-theme').classList.toggle('dark', s.theme === 'dark');
+  applyTheme();
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () {
+      if (getSettings().theme === 'auto') applyTheme();
+    });
+  }
   if (s.notifications && typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission();
   window.addEventListener('hashchange', runRoute);
   document.body.addEventListener('click', function (e) {

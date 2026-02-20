@@ -122,3 +122,67 @@ function detectInteractions(medications) {
 function getKnownInteractions() {
   return KNOWN_INTERACTIONS;
 }
+
+// ---------------------------------------------------
+// openFDA label lookup (optional online enrichment)
+var OPENFDA_CACHE_KEY = 'dailymed_openfda_cache_v1';
+var OPENFDA_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function getOpenFdaCache() {
+  try {
+    return JSON.parse(localStorage.getItem(OPENFDA_CACHE_KEY) || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+
+function setOpenFdaCache(cache) {
+  try {
+    localStorage.setItem(OPENFDA_CACHE_KEY, JSON.stringify(cache));
+  } catch (e) {}
+}
+
+function normalizeQueryTerm(text) {
+  return (text || '').toString().trim().toLowerCase();
+}
+
+function buildOpenFdaQuery(term) {
+  var q = term.replace(/\"/g, '');
+  return 'active_ingredient:\"' + q + '\" OR openfda.generic_name:\"' + q + '\" OR openfda.substance_name:\"' + q + '\" OR openfda.brand_name:\"' + q + '\"';
+}
+
+function extractLabelSection(label, key) {
+  var arr = label && label[key];
+  if (!arr || !arr.length) return '';
+  return arr.join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function extractOpenFdaInfo(label) {
+  return {
+    brandName: (label.openfda && label.openfda.brand_name && label.openfda.brand_name[0]) || '',
+    genericName: (label.openfda && label.openfda.generic_name && label.openfda.generic_name[0]) || '',
+    substanceName: (label.openfda && label.openfda.substance_name && label.openfda.substance_name[0]) || '',
+    interactions: extractLabelSection(label, 'drug_interactions'),
+    warnings: extractLabelSection(label, 'warnings'),
+    precautions: extractLabelSection(label, 'precautions'),
+    boxedWarning: extractLabelSection(label, 'boxed_warning'),
+  };
+}
+
+async function fetchOpenFdaLabelInfo(term) {
+  var clean = normalizeQueryTerm(term);
+  if (!clean) return null;
+  var cache = getOpenFdaCache();
+  var cached = cache[clean];
+  if (cached && (Date.now() - cached.ts) < OPENFDA_CACHE_TTL_MS) return cached.data;
+  var query = buildOpenFdaQuery(clean);
+  var url = 'https://api.fda.gov/drug/label.json?search=' + encodeURIComponent(query) + '&limit=1';
+  var res = await fetch(url);
+  if (!res.ok) throw new Error('openFDA error');
+  var data = await res.json();
+  if (!data || !data.results || !data.results.length) return null;
+  var info = extractOpenFdaInfo(data.results[0]);
+  cache[clean] = { ts: Date.now(), data: info };
+  setOpenFdaCache(cache);
+  return info;
+}
