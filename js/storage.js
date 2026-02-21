@@ -148,8 +148,3 @@ function addMedicationHistory(entry) {
   setJson(STORAGE_KEYS.medicationHistory, list);
   return entry;
 }
-
-// Seed inicial desativado (já não usa user_medications.json)
-function seedMedicationsIfEmpty() {
-  // Não carrega medicamentos de ficheiro externo; a lista fica vazia até o utilizador adicionar.
-}

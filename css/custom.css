@@ -27,7 +27,144 @@
   --secondary-container: #2a3d47;
 }
 
-body { font-family: system-ui, -apple-system, sans-serif; }
+body {
+  font-family: "Source Sans 3", system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+  color: var(--on-surface);
+}
+/* Focus visibility */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.med-card-detail {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+}
+.med-card-detail:focus-visible {
+  border-radius: 12px;
+}
+.warm-app .app-header {
+  background: linear-gradient(135deg, var(--primary-container), var(--secondary-container));
+  border-bottom-left-radius: 18px;
+  border-bottom-right-radius: 18px;
+  box-shadow: 0 10px 24px rgba(20, 20, 20, 0.08);
+}
+.warm-app .home-header {
+  background: transparent;
+  box-shadow: none;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  padding: 1.25rem 1.25rem 0.5rem;
+}
+.warm-app .home-header img {
+  height: 42px;
+  width: auto;
+}
+.warm-app .home-hero {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 1.1rem 1.25rem;
+  min-height: 92px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #eef0ff 0%, #e9f3ff 45%, #e3f4ff 100%);
+  box-shadow: 0 10px 22px rgba(20, 20, 20, 0.08);
+  border: 1px solid rgba(148, 130, 189, 0.12);
+}
+.warm-app .home-hero-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.warm-app .home-hero-brand img {
+  height: 72px;
+  width: auto;
+}
+.warm-app .home-hero-title {
+  font-weight: 700;
+  font-size: 1.25rem;
+  color: #806ab0;
+  letter-spacing: 0.01em;
+}
+.warm-app .home-main {
+  padding-top: 0.25rem;
+}
+.warm-app .home-main .section-title {
+  font-size: 0.7rem;
+  margin-top: 0.15rem;
+}
+.warm-app .home-main .dm-rounded-2xl {
+  padding: 0.75rem;
+}
+.warm-app .home-compact {
+  gap: 0.65rem;
+}
+.warm-app .home-compact .section-title {
+  letter-spacing: 0.08em;
+}
+.warm-app .app-title {
+  letter-spacing: 0.01em;
+}
+.warm-app .app-title {
+  font-size: 1.05rem;
+}
+.warm-app body {
+  background: linear-gradient(180deg, #f9f5f0 0%, var(--background) 35%);
+}
+.warm-app #bottom-nav {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+}
+.warm-app .dm-rounded-xl { border-radius: 14px; }
+.warm-app .dm-rounded-2xl { border-radius: 18px; }
+.warm-app .dm-shadow { box-shadow: 0 12px 26px rgba(20, 20, 20, 0.1); }
+.warm-app .border { border-color: rgba(148, 130, 189, 0.18); }
+.warm-app .card-round,
+.warm-app .card,
+.warm-app .dm-rounded-2xl {
+  box-shadow: 0 10px 26px rgba(20, 20, 20, 0.08);
+  border-color: rgba(148, 130, 189, 0.18);
+}
+.warm-app .bg-primary {
+  background: #9c8cc4;
+}
+.warm-app .bg-secondary {
+  background: #88bdd8;
+}
+.warm-app .bg-primary-container {
+  background: #efe8f7;
+}
+.warm-app .bg-secondary-container {
+  background: #dceff6;
+}
+.warm-app .text-primary { color: #7a66b3; }
+.warm-app .text-secondary { color: #3f7fa6; }
+.warm-app a,
+.warm-app button {
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease;
+}
+.warm-app a:active,
+.warm-app button:active {
+  transform: translateY(1px);
+}
+.warm-app .card-round:hover,
+.warm-app .dm-rounded-2xl:hover,
+.warm-app .dm-rounded-xl:hover {
+  box-shadow: 0 14px 28px rgba(20, 20, 20, 0.12);
+}
 .card-round { border-radius: 14px; }
 .btn-round { border-radius: 10px; }
 .input-outline { border: 1px solid var(--outline); border-radius: 10px; transition: border-color 0.15s, box-shadow 0.15s; }
@@ -38,6 +175,39 @@ body { font-family: system-ui, -apple-system, sans-serif; }
 .med-form-submit { width: 100%; padding: 0.875rem 1rem; background: var(--primary); color: var(--on-primary); font-weight: 600; border-radius: 12px; border: none; display: flex; align-items: center; justify-content: center; gap: 0.5rem; transition: filter 0.15s; }
 .med-form-submit:hover { filter: brightness(1.05); }
 .med-form-submit:active { filter: brightness(0.98); }
+
+/* Section helpers */
+.section-title {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  color: var(--on-surface-variant);
+}
+.section-subtitle {
+  font-size: 0.85rem;
+  color: var(--on-surface-variant);
+}
+.section-block {
+  display: grid;
+  gap: 0.75rem;
+}
+
+/* Consistent cards + buttons */
+.card-round,
+.dm-rounded-2xl,
+.dm-rounded-xl {
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.warm-app a.button-like,
+.warm-app .btn-primary,
+.warm-app .btn-secondary {
+  border-radius: 14px;
+  font-weight: 600;
+}
+
+/* Lists */
+.list-tight > li { padding: 0.75rem; }
 
 /* Autocomplete dropdown */
 .autocomplete-list { max-height: 240px; overflow-y: auto; }
@@ -68,8 +238,129 @@ body { font-family: system-ui, -apple-system, sans-serif; }
 .toast-info { background: #3b82f6; }
 
 /* Recycling guide improvements */
-.recycling-guide-section h2 { font-size: 1.125rem; }
-.recycling-guide-section ul { margin-left: 1rem; }
+/* Recycling guide visual */
+.recycling-guide-hero {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  border-radius: 16px;
+  background: linear-gradient(135deg, var(--primary-container), var(--secondary-container));
+  border: 1px solid rgba(148, 130, 189, 0.2);
+}
+.recycling-hero-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--primary);
+  box-shadow: 0 8px 16px rgba(0,0,0,0.08);
+}
+.recycling-hero-title {
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--on-surface);
+}
+.recycling-hero-subtitle {
+  font-size: 0.9rem;
+  color: var(--on-surface-variant);
+}
+.recycling-guide-grid {
+  display: grid;
+  gap: 0.9rem;
+}
+.recycling-guide-card {
+  border-radius: 16px;
+  padding: 1rem 1.1rem;
+  border: 1px solid rgba(0,0,0,0.08);
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.06);
+}
+.recycling-guide-card.is-primary {
+  background: var(--primary-container);
+}
+.recycling-guide-card.is-secondary {
+  background: var(--secondary-container);
+}
+.recycling-guide-card.is-warning {
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+.recycling-guide-card.is-info {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+.recycling-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+.recycling-card-header span {
+  color: var(--primary);
+}
+.recycling-card-header h2 {
+  font-size: 1rem;
+}
+.recycling-card-text {
+  font-size: 0.9rem;
+  color: var(--on-surface);
+}
+.recycling-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.6rem;
+  font-weight: 600;
+  color: var(--primary);
+}
+.recycling-list {
+  list-style: none;
+  padding-left: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+.recycling-list li {
+  position: relative;
+  padding-left: 1.25rem;
+  font-size: 0.9rem;
+  color: var(--on-surface);
+}
+.recycling-list li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.55rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 0 3px rgba(148, 130, 189, 0.15);
+}
+.recycling-guide-tip {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  background: #f8fafc;
+  border: 1px dashed rgba(148, 130, 189, 0.4);
+}
+.recycling-guide-tip .material-icons {
+  color: var(--secondary);
+}
+.recycling-tip-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+.recycling-tip-text {
+  font-size: 0.85rem;
+  color: var(--on-surface-variant);
+}
 
 /* Recycling map */
 .recycling-map-shell {
