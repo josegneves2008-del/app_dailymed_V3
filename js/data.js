@@ -148,7 +148,7 @@ function normalizeQueryTerm(text) {
 
 function buildOpenFdaQuery(term) {
   var q = term.replace(/\"/g, '');
-  return 'active_ingredient:\"' + q + '\" OR openfda.generic_name:\"' + q + '\" OR openfda.substance_name:\"' + q + '\" OR openfda.brand_name:\"' + q + '\"';
+  return 'active_ingredient:"' + q + '" OR openfda.generic_name:"' + q + '" OR openfda.substance_name:"' + q + '" OR openfda.brand_name:"' + q + '"';
 }
 
 function extractLabelSection(label, key) {
